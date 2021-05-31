@@ -11,9 +11,11 @@ import (
 	"log"
 	"fmt"
 	"context"
-	//"regexp"
+	"regexp"
 	"net/url"
 	"strings"
+	"time"
+	"os"
 )
 
 type DB struct {
@@ -24,7 +26,7 @@ var ctx = context.Background()
 
 func (d *DB) init() {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "redis:6379",
+		Addr: "localhost:6379",
 		Password: "",
 		DB: 0,
 	})
@@ -40,19 +42,27 @@ func (d *DB) contains_domain(Domain string) (bool) {
 	return d.conn.SIsMember(ctx, "onsp_domains", Domain).Val()
 }
 
-
 func main() {
+	if len(os.Args) != 2 {
+		log.Fatal("Please provide entrypoint as first argument")
+	}
+
+	entrypoint := os.Args[1]
+
 	var meiliClient = meilisearch.NewClient(meilisearch.Config{
-		Host: "http://search:7700",
-		APIKey: "somerandomkey",
+		Host: "http://localhost:7700",
 	})
 
-	_, err := meiliClient.Indexes().Create(meilisearch.CreateIndexRequest{
-		UID: "domains",
-	})
-
+	_, err := meiliClient.Indexes().Get("domains")
 	if err != nil {
-		log.Print(err)
+		_, err := meiliClient.Indexes().Create(meilisearch.CreateIndexRequest{
+			UID: "domains",
+			PrimaryKey: "id",
+		})
+
+		if err != nil {
+			log.Print(err)
+		}
 	}
 
 	cache := DB{}
@@ -60,19 +70,21 @@ func main() {
 
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"),
-		//colly.URLFilters(regexp.MustCompile(".*\\.onion$")),
+		colly.URLFilters(regexp.MustCompile(".*\\.onion.*")),
 		colly.Async(true),
 		colly.CacheDir("./cache"),
 	)
 
-	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 16})
+	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 2})
 
 	storage := &redisstorage.Storage{
-		Address:  "redis:6379",
+		Address:  "localhost:6379",
 		Password: "",
 		DB:       0,
 		Prefix:   "job01",
 	}
+
+	c.SetProxy("socks5://localhost:9050")
 
 	err = c.SetStorage(storage)
 	if err != nil {
@@ -100,26 +112,39 @@ func main() {
 		baseurl.WriteString("http://")
 		baseurl.WriteString(hostname)
 
+		id := strings.ReplaceAll(hostname, ".", "_")
+
 		if !cache.contains_domain(hostname) {
-			fmt.Printf("%s: %s\n", baseurl.String(), e.Text)
+			fmt.Printf("%s, %s, %s\n\n", id, hostname, e.Text)
 			docs := []map[string]interface{}{
 				{
-					"domain": baseurl.String(),
+					"id": id,
+					"hostname": hostname,
 					"title": e.Text,
 				},
 			}
 			_, err := meiliClient.Documents("domains").AddOrUpdate(docs)
 
-			if err != nil {
-				log.Fatal(err)
+			c := 0
+
+			for err != nil {
+				fmt.Println("Retrying document insertion")
+				c += 1
+				if c > 5 {
+					log.Fatal(err)
+				}
+				time.Sleep(3)
+				_, err = meiliClient.Documents("domains").AddOrUpdate(docs)
 			}
+
+			fmt.Printf("Succeeded document insertion in %d attempts", c)
 
 			cache.add_domain(hostname)
 		}
 	})
 
-	c.Visit("http://httpbin.org/")
+	c.Visit(entrypoint)
 	c.Wait()
-
+	fmt.Println("My work is done here")
 	defer storage.Client.Close()
 }

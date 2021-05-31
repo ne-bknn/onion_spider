@@ -3,18 +3,11 @@
 version: "3"
 
 services:
-  parser:
-    build:
-      context: ./parser
-    depends_on:
-      - redis
-      - search
-    volumes:
-      - ./.data/cache:/cache
-
   redis:
     image: redis
     restart: on-failure
+    ports:
+      - 127.0.0.1:6379:6379
     volumes:
       - ./.data/redis:/data
 
@@ -23,8 +16,17 @@ services:
     volumes:
       - ./.data/ms:/data.ms
     ports:
-      - 7700:7700
+      - 127.0.0.1:7700:7700
     environment:
       - MEILI_NO_ANALYTICS=yes
-      - MEILI_MASTER_KEY=somerandomkey
       - IN_DOCKER=yes
+
+  proxy:
+    build:
+      dockerfile: ./Dockerfile.proxy
+      context: .
+    ports:
+      - 127.0.0.1:8118:8118
+      - 127.0.0.1:9050:9050
+    environment:
+      - TOR_NewCircuitPeriod=30
