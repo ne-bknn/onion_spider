@@ -1,3 +1,4 @@
 FROM dperson/torproxy
 
+# kinda hacky but i'm not ready to implement something better
 HEALTHCHECK --interval=30s --retries=1 CMD killall -HUP tor
